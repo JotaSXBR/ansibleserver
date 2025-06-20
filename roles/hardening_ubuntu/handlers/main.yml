@@ -1,0 +1,20 @@
+---
+# Handlers para reiniciar/recarregar serviços quando arquivos de configuração mudarem
+
+- name: reload sshd
+  service:
+    name: ssh
+    state: reloaded
+
+- name: reload ufw
+  command: ufw reload
+  become: true
+
+- name: reload auditd
+  command: augenrules --load && systemctl restart auditd
+  become: true
+
+- name: reload fail2ban
+  service:
+    name: fail2ban
+    state: restarted 

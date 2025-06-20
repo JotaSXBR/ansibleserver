@@ -1,0 +1,30 @@
+---
+# Default variables for the hardening_ubuntu role
+# Podem ser sobrescritas no playbook ou no inventário.
+
+# Nome do usuário de aplicação/deploy que será criado
+new_user: deploy
+
+# Tamanho do arquivo de swap
+swap_size: "4G"
+
+# Repositório de segurança da distribuição Ubuntu 24.04 (noble)
+security_repo: "deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse"
+
+# Portas TCP que devem permanecer abertas no firewall UFW
+ufw_allowed_ports:
+  - 22   # SSH
+  - 80   # HTTP
+  - 443  # HTTPS
+
+# Parâmetros globais para a jail SSH do Fail2ban
+fail2ban_bantime: 10m
+fail2ban_findtime: 10m
+fail2ban_maxretry: 5
+
+# Fuso horário desejado para o servidor
+timezone: America/Sao_Paulo
+
+# Pacote(s) NTP a instalar. Chrony é o padrão no Ubuntu 24.04.
+ntp_packages:
+  - chrony 
