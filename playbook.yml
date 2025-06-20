@@ -1,0 +1,336 @@
+---
+- name: Hardening Ubuntu 24.04
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    new_user: deploy
+    swap_size: "4G"
+    security_repo: "deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse"
+    ufw_allowed_ports:
+      - 22
+      - 80
+      - 443
+    fail2ban_bantime: 10m
+    fail2ban_findtime: 10m
+    fail2ban_maxretry: 5
+
+  vars_prompt:
+    - name: "deploy_password"
+      prompt: "Digite a senha para o usuário 'deploy' (será solicitada duas vezes)"
+      private: yes
+      confirm: yes
+
+  pre_tasks:
+    - name: Hash deploy password for /etc/shadow
+      set_fact:
+        deploy_password_hash: "{{ deploy_password | password_hash('sha512') }}"
+
+  tasks:
+    # ----------------------------------------------------------------- #
+    # ETAPA 1 – Repositório de segurança + update/upgrade + pacotes     #
+    # ----------------------------------------------------------------- #
+    - name: "Adicionar repositório security se necessário"
+      apt_repository:
+        repo: "{{ security_repo }}"
+        state: present
+      when:
+        - ansible_distribution == "Ubuntu"
+        - ansible_distribution_release == "noble"
+
+    - name: "Atualizar cache APT e fazer upgrade de pacotes"
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: "Instalar pacotes de segurança e utilitários"
+      apt:
+        name:
+          - ufw
+          - fail2ban
+          - auditd
+          - audispd-plugins
+          - sysstat
+          - rkhunter
+          - debsums
+          - apt-listbugs
+          - apt-listchanges
+          - curl
+          - jq
+          - openssl
+        state: present
+      notify: reload ufw
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 2 – Usuário deploy com sudo e senha                          #
+    # ----------------------------------------------------------------- #
+    - name: "Criar usuário '{{ new_user }}' com senha e grupo sudo"
+      user:
+        name: "{{ new_user }}"
+        comment: "Deployment user"
+        password: "{{ deploy_password_hash }}"
+        groups: sudo
+        append: yes
+        shell: /bin/bash
+        state: present
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 3 – Swap de 4 GB + swappiness                                #
+    # ----------------------------------------------------------------- #
+    - name: "Verificar se /swapfile já existe"
+      stat:
+        path: /swapfile
+      register: swapfile_stat
+
+    - name: "Criar arquivo de swap"
+      command: fallocate -l {{ swap_size }} /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: "Definir permissões para /swapfile"
+      file:
+        path: /swapfile
+        mode: '0600'
+      when: not swapfile_stat.stat.exists
+
+    - name: "Formatar /swapfile"
+      command: mkswap /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: "Ativar swap"
+      command: swapon /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: "Adicionar swap em /etc/fstab"
+      mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        state: present
+
+    - name: "Ajustar vm.swappiness para 10"
+      sysctl:
+        name: vm.swappiness
+        value: '10'
+        state: present
+        reload: yes
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 4 – UFW                                                     #
+    # ----------------------------------------------------------------- #
+    - name: "Definir política padrão UFW para negar conexões de entrada"
+      ufw:
+        state: enabled
+        direction: incoming
+        policy: deny
+
+    - name: "Definir política padrão UFW para permitir conexões de saída"
+      ufw:
+        state: enabled
+        direction: outgoing
+        policy: allow
+
+    - name: "Liberar portas necessárias no UFW"
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: "{{ ufw_allowed_ports }}"
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 5 – Hardening do SSH                                         #
+    # ----------------------------------------------------------------- #
+    - name: "Garantir 'Port 22' no sshd_config (idempotente)"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Port '
+        line: 'Port 22'
+        state: present
+
+    - name: "Desabilitar login root via SSH"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin '
+        line: 'PermitRootLogin no'
+        state: present
+
+    - name: "Garantir autenticação por senha habilitada"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication '
+        line: 'PasswordAuthentication yes'
+        state: present
+
+    - name: "Inserir opções de segurança adicionais no sshd_config"
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE HARDENING"
+        block: |
+          LogLevel VERBOSE
+          X11Forwarding no
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          MaxAuthTries 3
+          MaxSessions 2
+          TCPKeepAlive no
+      notify: reload sshd
+
+    - name: "Validar sintaxe do sshd_config"
+      command: sshd -t
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 6 – Políticas de sistema / kernel                           #
+    # ----------------------------------------------------------------- #
+    - name: "Desabilitar core dumps para todos os usuários"
+      copy:
+        dest: /etc/security/limits.d/99-disable-coredumps.conf
+        content: "* hard core 0\n"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: "Ajustar UMASK para 027 em /etc/login.defs"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^UMASK'
+        line: 'UMASK           027'
+
+    - name: "Definir método de criptografia de senhas SHA512"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^ENCRYPT_METHOD'
+        line: 'ENCRYPT_METHOD SHA512'
+
+    - name: "Adicionar SHA_CRYPT_MIN_ROUNDS 500000 se ausente"
+      lineinfile:
+        path: /etc/login.defs
+        line: 'SHA_CRYPT_MIN_ROUNDS 500000'
+        insertafter: EOF
+        state: present
+
+    - name: "Bloquear protocolos incomuns (dccp, sctp, rds, tipc)"
+      copy:
+        dest: /etc/modprobe.d/99-disable-uncommon-net.conf
+        content: |
+          install dccp /bin/true
+          install sctp /bin/true
+          install rds /bin/true
+          install tipc /bin/true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: "Adicionar banner legal em /etc/issue e /etc/issue.net"
+      copy:
+        dest: "{{ item }}"
+        content: |
+          *****************************************************************
+          *                                                               *
+          * This system is for the use of authorized users only.          *
+          * Individuals using this computer system without authority, or  *
+          * in excess of their authority, are subject to having all of    *
+          * their activities on this system monitored and recorded.       *
+          *                                                               *
+          * Anyone using this system expressly consents to such           *
+          * monitoring and is advised that if such monitoring reveals     *
+          * possible evidence of criminal activity, system personnel may  *
+          * provide the evidence of such monitoring to law enforcement    *
+          * officials.                                                    *
+          *                                                               *
+          *****************************************************************
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - /etc/issue
+        - /etc/issue.net
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 7 – auditd                                                  #
+    # ----------------------------------------------------------------- #
+    - name: "Copiar regras customizadas do auditd"
+      copy:
+        dest: /etc/audit/rules.d/99-custom.rules
+        content: |
+          # Baseline audit rules geradas via playbook Ansible
+          -e 2
+          -b 8192
+          -w /etc/audit/ -p wa -k audit_rules
+          -w /etc/group -p wa -k identity
+          -w /etc/passwd -p wa -k identity
+          -w /etc/gshadow -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/security/opasswd -p wa -k identity
+          -w /etc/sudoers -p wa -k sudoers
+          -w /etc/sudoers.d/ -p wa -k sudoers
+          -w /etc/ssh/sshd_config -p wa -k sshd_config
+          -w /var/log/faillog -p wa -k logins
+          -w /var/log/lastlog -p wa -k logins
+          -w /var/log/tallylog -p wa -k logins
+          -a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k priv_esc
+          -a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k priv_esc
+          -a always,exit -F arch=b64 -S open,creat,truncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access_denied
+          -a always,exit -F arch=b32 -S open,creat,truncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access_denied
+          -a always,exit -F arch=b64 -S open,creat,truncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access_denied
+          -a always,exit -F arch=b32 -S open,creat,truncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access_denied
+      notify: reload auditd
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 8 – Fail2ban                                                #
+    # ----------------------------------------------------------------- #
+    - name: "Configurar jail.local do Fail2ban (SSH)"
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime  = {{ fail2ban_bantime }}
+          findtime = {{ fail2ban_findtime }}
+          maxretry = {{ fail2ban_maxretry }}
+
+          [sshd]
+          enabled  = true
+          port     = ssh
+          logpath  = %(sshd_log)s
+          backend  = %(sshd_backend)s
+      notify: reload fail2ban
+
+    # ----------------------------------------------------------------- #
+    # ETAPA 9 – rkhunter                                                #
+    # ----------------------------------------------------------------- #
+    - name: "Atualizar assinaturas do rkhunter"
+      command: rkhunter --update
+
+    - name: "Gerar baseline inicial do rkhunter (executado uma vez)"
+      command: rkhunter --propupd
+      args:
+        creates: /var/lib/rkhunter/db/rkhunter.dat
+
+    - name: "Agendar verificação semanal do rkhunter (segunda, 03h00)"
+      cron:
+        name: "Weekly rkhunter scan"
+        user: root
+        minute: "0"
+        hour: "3"
+        weekday: "1"
+        job: "/usr/bin/rkhunter --check --cronjob --report-warnings-only"
+
+  handlers:
+    - name: reload sshd
+      service:
+        name: ssh
+        state: reloaded
+
+    - name: reload ufw
+      command: ufw reload
+      become: true
+
+    - name: reload auditd
+      command: augenrules --load && systemctl restart auditd
+      become: true
+
+    - name: reload fail2ban
+      service:
+        name: fail2ban
+        state: restarted 
