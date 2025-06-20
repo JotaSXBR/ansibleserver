@@ -1,26 +1,29 @@
 ---
 # tasks/main.yml — Hardening Ubuntu 24.04
-# Cada bloco corresponde às etapas aprovadas pelo usuário.
-# Comentários extensivos explicam o propósito de cada tarefa.
+# Todas as tarefas usam FQCN (Fully-Qualified Collection Name) conforme ansible-lint ≥ 6.
+# Cada etapa possui comentários e tags padronizadas (hardening + assunto).
 
-- name: "ETAPA 1 | Adicionar repositório de segurança 'noble-security'"
-  apt_repository:
+# --------------------------------------------------------------------
+# ETAPA 1 – Repositório de segurança, atualização e pacotes essenciais
+# --------------------------------------------------------------------
+- name: "ETAPA 1 | Adicionar repositório 'noble-security'"
+  ansible.builtin.apt_repository:
     repo: "{{ security_repo }}"
     state: present
   when:
     - ansible_distribution == "Ubuntu"
     - ansible_distribution_release == "noble"
-  tags: [security, updates]
+  tags: [hardening, security, updates]
 
-- name: "ETAPA 1 | Atualizar cache APT e atualizar pacotes (dist-upgrade)"
-  apt:
-    update_cache: yes
+- name: "ETAPA 1 | Atualizar cache APT e executar dist-upgrade"
+  ansible.builtin.apt:
+    update_cache: true
     upgrade: dist
     cache_valid_time: 3600
-  tags: [security, updates]
+  tags: [hardening, security, updates]
 
-- name: "ETAPA 1 | Instalar pacotes de segurança e utilitários essenciais"
-  apt:
+- name: "ETAPA 1 | Instalar pacotes de segurança e utilitários"
+  ansible.builtin.package:
     name:
       - ufw
       - fail2ban
@@ -34,126 +37,92 @@
       - curl
       - jq
       - openssl
-    state: present
+    state: latest
   notify: reload ufw
-  tags: [security, packages]
+  tags: [hardening, security, packages]
+
+- name: "ETAPA 1 | Remover pacotes órfãos e limpar cache"
+  ansible.builtin.apt:
+    autoremove: yes
+    autoclean: yes
+  tags: [hardening, security, updates]
 
 # --------------------------------------------------------------------
-# ETAPA 2 – Criação do usuário de deploy com privilégios sudo
+# ETAPA 2 – Usuário de deploy com privilégio sudo
 # --------------------------------------------------------------------
 - name: "ETAPA 2 | Criar usuário '{{ new_user }}' com senha e grupo sudo"
-  user:
+  ansible.builtin.user:
     name: "{{ new_user }}"
     comment: "Deployment user"
     password: "{{ deploy_password_hash }}"
     groups: sudo
-    append: yes
+    append: true
     shell: /bin/bash
     state: present
-  tags: [user-management]
+  tags: [hardening, user]
 
 # --------------------------------------------------------------------
-# ETAPA 3 – Configuração de swap e ajuste de swappiness
+# ETAPA 3 – Swap file e swappiness (community.general.swapfile)
 # --------------------------------------------------------------------
-- name: "ETAPA 3 | Verificar se /swapfile já existe"
-  stat:
+- name: "ETAPA 3 | Garantir /swapfile presente ({{ swap_size }}) e swappiness=10"
+  community.general.swapfile:
     path: /swapfile
-  register: swapfile_stat
-  tags: [swap]
-
-- name: "ETAPA 3 | Criar arquivo de swap"
-  command: fallocate -l {{ swap_size }} /swapfile
-  when: not swapfile_stat.stat.exists
-  tags: [swap]
-
-- name: "ETAPA 3 | Definir permissões para /swapfile"
-  file:
-    path: /swapfile
-    mode: '0600'
-  when: not swapfile_stat.stat.exists
-  tags: [swap]
-
-- name: "ETAPA 3 | Formatar /swapfile"
-  command: mkswap /swapfile
-  when: not swapfile_stat.stat.exists
-  tags: [swap]
-
-- name: "ETAPA 3 | Ativar swap"
-  command: swapon /swapfile
-  when: not swapfile_stat.stat.exists
-  tags: [swap]
-
-- name: "ETAPA 3 | Adicionar /swapfile ao /etc/fstab"
-  mount:
-    name: none
-    src: /swapfile
-    fstype: swap
-    opts: sw
+    size: "{{ swap_size }}"
     state: present
-  tags: [swap]
-
-- name: "ETAPA 3 | Ajustar vm.swappiness para 10"
-  sysctl:
-    name: vm.swappiness
-    value: '10'
-    state: present
-    reload: yes
-  tags: [swap]
+    swappiness: 10
+  tags: [hardening, swap]
 
 # --------------------------------------------------------------------
 # ETAPA 4 – Configuração do firewall UFW
 # --------------------------------------------------------------------
-- name: "ETAPA 4 | Definir política padrão: negar conexões de entrada"
-  ufw:
+- name: "ETAPA 4 | Política padrão: negar conexões de entrada"
+  community.general.ufw:
     state: enabled
     direction: incoming
     policy: deny
-  tags: [ufw, firewall]
+  tags: [hardening, firewall]
 
-- name: "ETAPA 4 | Definir política padrão: permitir conexões de saída"
-  ufw:
+- name: "ETAPA 4 | Política padrão: permitir conexões de saída"
+  community.general.ufw:
     state: enabled
     direction: outgoing
     policy: allow
-  tags: [ufw, firewall]
+  tags: [hardening, firewall]
 
-- name: "ETAPA 4 | Liberar portas necessárias no UFW"
-  ufw:
+- name: "ETAPA 4 | Liberar portas TCP necessárias"
+  community.general.ufw:
     rule: allow
     port: "{{ item }}"
     proto: tcp
   loop: "{{ ufw_allowed_ports }}"
-  tags: [ufw, firewall]
+  tags: [hardening, firewall]
 
 # --------------------------------------------------------------------
 # ETAPA 5 – Hardening do SSH
 # --------------------------------------------------------------------
 - name: "ETAPA 5 | Garantir 'Port 22' configurado"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?Port '
     line: 'Port 22'
-    state: present
-  tags: [ssh]
+  tags: [hardening, ssh]
 
 - name: "ETAPA 5 | Desabilitar login root via SSH"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PermitRootLogin '
     line: 'PermitRootLogin no'
-    state: present
-  tags: [ssh]
+  tags: [hardening, ssh]
 
 - name: "ETAPA 5 | Garantir PasswordAuthentication habilitado"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PasswordAuthentication '
     line: 'PasswordAuthentication yes'
-    state: present
-  tags: [ssh]
+  tags: [hardening, ssh]
 
-- name: "ETAPA 5 | Inserir opções extras de hardening no sshd_config"
-  blockinfile:
+- name: "ETAPA 5 | Inserir opções extras de hardening"
+  ansible.builtin.blockinfile:
     path: /etc/ssh/sshd_config
     marker: "# {mark} ANSIBLE HARDENING"
     block: |
@@ -165,127 +134,135 @@
       MaxSessions 2
       TCPKeepAlive no
   notify: reload sshd
-  tags: [ssh]
+  tags: [hardening, ssh]
 
 - name: "ETAPA 5 | Validar sintaxe do sshd_config"
-  command: sshd -t
-  tags: [ssh]
+  ansible.builtin.command: sshd -t
+  changed_when: false
+  tags: [hardening, ssh]
 
 # --------------------------------------------------------------------
 # ETAPA 6 – Políticas de sistema / kernel
 # --------------------------------------------------------------------
-- name: "ETAPA 6 | Desabilitar core dumps para todos os usuários"
-  copy:
+- name: "ETAPA 6 | Desabilitar core dumps"
+  ansible.builtin.copy:
     dest: /etc/security/limits.d/99-disable-coredumps.conf
     content: "* hard core 0\n"
     owner: root
     group: root
     mode: '0644'
-  tags: [kernel, limits]
+  tags: [hardening, kernel]
 
 - name: "ETAPA 6 | Ajustar UMASK padrão para 027"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/login.defs
     regexp: '^UMASK'
     line: 'UMASK           027'
-  tags: [kernel]
+  tags: [hardening, kernel]
 
-- name: "ETAPA 6 | Definir método de criptografia SHA512"
-  lineinfile:
+- name: "ETAPA 6 | Definir SHA512 para senhas"
+  ansible.builtin.lineinfile:
     path: /etc/login.defs
     regexp: '^ENCRYPT_METHOD'
     line: 'ENCRYPT_METHOD SHA512'
-  tags: [kernel]
+  tags: [hardening, kernel]
 
 - name: "ETAPA 6 | Garantir SHA_CRYPT_MIN_ROUNDS 500000"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/login.defs
     line: 'SHA_CRYPT_MIN_ROUNDS 500000'
     insertafter: EOF
-    state: present
-  tags: [kernel]
+  tags: [hardening, kernel]
 
-- name: "ETAPA 6 | Bloquear protocolos em desuso"
-  copy:
+- name: "ETAPA 6 | Bloquear protocolos incomuns (dccp, sctp, rds, tipc)"
+  ansible.builtin.copy:
     dest: /etc/modprobe.d/99-disable-uncommon-net.conf
     content: |
       install dccp /bin/true
       install sctp /bin/true
       install rds /bin/true
       install tipc /bin/true
-  tags: [kernel]
+  tags: [hardening, kernel]
 
-- name: "ETAPA 6 | Copiar banner legal para /etc/issue e /etc/issue.net"
-  copy:
+- name: "ETAPA 6 | Copiar banner legal"
+  ansible.builtin.copy:
     src: banner.txt
     dest: "{{ item }}"
   loop:
     - /etc/issue
     - /etc/issue.net
   notify: reload sshd
-  tags: [banner]
+  tags: [hardening, banner]
 
 # --------------------------------------------------------------------
 # ETAPA 7 – Configuração do auditd
 # --------------------------------------------------------------------
 - name: "ETAPA 7 | Copiar regras customizadas do auditd"
-  copy:
+  ansible.builtin.copy:
     src: 99-custom.rules
     dest: /etc/audit/rules.d/99-custom.rules
   notify: reload auditd
-  tags: [auditd]
+  tags: [hardening, auditd]
 
 # --------------------------------------------------------------------
 # ETAPA 8 – Configuração do Fail2ban
 # --------------------------------------------------------------------
-- name: "ETAPA 8 | Copiar jail.local do Fail2ban (SSH)"
-  template:
+- name: "ETAPA 8 | Copiar jail.local do Fail2ban"
+  ansible.builtin.template:
     src: jail.local.j2
     dest: /etc/fail2ban/jail.local
   notify: reload fail2ban
-  tags: [fail2ban]
+  tags: [hardening, fail2ban]
 
 # --------------------------------------------------------------------
 # ETAPA 9 – Configuração do rkhunter
 # --------------------------------------------------------------------
 - name: "ETAPA 9 | Atualizar assinaturas do rkhunter"
-  command: rkhunter --update
-  tags: [rkhunter]
+  ansible.builtin.command: rkhunter --update
+  changed_when: false
+  tags: [hardening, rkhunter]
 
-- name: "ETAPA 9 | Gerar baseline inicial do rkhunter (uma vez)"
-  command: rkhunter --propupd
+- name: "ETAPA 9 | Criar baseline inicial (uma vez)"
+  ansible.builtin.command: rkhunter --propupd
   args:
     creates: /var/lib/rkhunter/db/rkhunter.dat
-  tags: [rkhunter]
+  tags: [hardening, rkhunter]
 
-- name: "ETAPA 9 | Agendar verificação semanal do rkhunter (segunda 03h00)"
-  cron:
-    name: "Weekly rkhunter scan"
+- name: "ETAPA 9 | Agendar verificação semanal do rkhunter"
+  ansible.builtin.cron:
+    name: "weekly rkhunter scan"
     user: root
-    minute: "0"
-    hour: "3"
-    weekday: "1"
+    minute: 0
+    hour: 3
+    weekday: 1
     job: "/usr/bin/rkhunter --check --cronjob --report-warnings-only"
-  tags: [rkhunter]
+  tags: [hardening, rkhunter]
 
 # --------------------------------------------------------------------
-# ETAPA 10 – Configuração de fuso horário e NTP
+# ETAPA 10 – Fuso horário e NTP
 # --------------------------------------------------------------------
-- name: "ETAPA 10 | Instalar pacote(s) NTP (chrony)"
-  apt:
+- name: "ETAPA 10 | Instalar pacote(s) NTP"
+  ansible.builtin.package:
     name: "{{ ntp_packages }}"
-    state: present
-  tags: [ntp]
+    state: latest
+  tags: [hardening, ntp]
 
 - name: "ETAPA 10 | Definir fuso horário para {{ timezone }}"
   community.general.timezone:
     name: "{{ timezone }}"
-  tags: [timezone]
+  tags: [hardening, timezone]
 
 - name: "ETAPA 10 | Garantir serviço chrony habilitado e rodando"
-  service:
+  ansible.builtin.service:
     name: chrony
     state: started
-    enabled: yes
+    enabled: true
   when: "'chrony' in ntp_packages"
-  tags: [ntp] 
+  tags: [hardening, ntp]
+
+- name: "ETAPA 10 | Verificar se chrony está sincronizado"
+  ansible.builtin.command: chronyc tracking
+  register: chrony_tracking
+  changed_when: false
+  failed_when: chrony_tracking.rc != 0
+  tags: [hardening, ntp] 

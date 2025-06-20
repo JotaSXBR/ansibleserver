@@ -2,19 +2,19 @@
 # Handlers para reiniciar/recarregar serviços quando arquivos de configuração mudarem
 
 - name: reload sshd
-  service:
+  ansible.builtin.service:
     name: ssh
     state: reloaded
 
 - name: reload ufw
-  command: ufw reload
-  become: true
+  community.general.ufw:
+    state: reloaded
 
 - name: reload auditd
-  command: augenrules --load && systemctl restart auditd
+  ansible.builtin.command: augenrules --load && systemctl restart auditd
   become: true
 
 - name: reload fail2ban
-  service:
+  ansible.builtin.service:
     name: fail2ban
     state: restarted 

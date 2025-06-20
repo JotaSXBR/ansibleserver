@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  author: Seu_Nome
+  description: Hardening Ubuntu 24.04 (security baseline)
+  license: MIT
+  min_ansible_version: '2.15'
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+
+# Collections necessárias para esta role
+# Serão instaladas via requirements.yml
+dependencies: [] 

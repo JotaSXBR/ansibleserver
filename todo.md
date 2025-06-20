@@ -9,4 +9,6 @@
 - [ ] Integrar logs/métricas com **Prometheus** e **Grafana**.
 - [ ] Configurar alertas de e-mail para *Fail2ban*.
 - [ ] Revisar e ajustar as regras do **auditd** conforme requisitos de compliance.
-- [ ] Transformar o playbook em uma *role* Ansible reutilizável. 
+- [ ] Transformar o playbook em uma *role* Ansible reutilizável.
+- [ ] Configurar integração contínua com **Molecule** e **Testinfra** para testar a role.
+- [ ] Provisionar servidor SMTP (ou serviço SaaS) para notificações do *Fail2ban*. 
