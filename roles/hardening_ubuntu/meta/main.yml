@@ -1,6 +1,6 @@
 ---
 galaxy_info:
-  author: Seu_Nome
+  author: Jessé
   description: Hardening Ubuntu 24.04 (security baseline)
   license: MIT
   min_ansible_version: '2.15'
